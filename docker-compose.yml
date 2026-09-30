@@ -1,0 +1,26 @@
+services:
+  lostfound:
+    build: .
+    image: lostfound:latest
+    container_name: lostfound
+    restart: unless-stopped
+    ports:
+      # 宿主机端口:容器端口。修改左侧端口即可更换本机访问端口。
+      - "${HOST_PORT:-8080}:8080"
+    environment:
+      # 必填：工作人员登记/核销口令，请在 .env 中改为强口令
+      STAFF_PASSWORD: "${STAFF_PASSWORD:-change-me}"
+      # 一次性交还码有效期（秒），默认 24 小时
+      HANDOVER_CODE_TTL: "${HANDOVER_CODE_TTL:-86400}"
+      LF_DATA_DIR: "/data"
+    volumes:
+      - lostfound_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  lostfound_data:
