@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS items (
     -- kept=保管中  removed=已撤下  returned=已交还
     status             TEXT    NOT NULL DEFAULT 'kept'
                          CHECK (status IN ('kept', 'removed', 'returned')),
+    version            INTEGER NOT NULL DEFAULT 0,   -- 单调递增版本：选定/改判推进，供并发乐观锁
     created_at         TEXT    NOT NULL,
     updated_at         TEXT    NOT NULL
 );
@@ -42,3 +43,15 @@ CREATE TABLE IF NOT EXISTS handover_codes (
 );
 CREATE INDEX IF NOT EXISTS idx_codes_claim ON handover_codes(claim_id);
 CREATE INDEX IF NOT EXISTS idx_codes_hash ON handover_codes(code_hash);
+
+-- 改判（误选更正）记录：工作人员发现误选时，把获选资格从原申请改判给
+-- 同一物品的另一份未获选申请。记录申请双方、更正理由与时间，供工作人员追溯。
+CREATE TABLE IF NOT EXISTS corrections (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id       INTEGER NOT NULL REFERENCES items(id),
+    from_claim_id INTEGER NOT NULL REFERENCES claims(id),  -- 原获选申请
+    to_claim_id   INTEGER NOT NULL REFERENCES claims(id),  -- 改判后获选申请
+    reason        TEXT    NOT NULL,
+    created_at    TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_corrections_item ON corrections(item_id);

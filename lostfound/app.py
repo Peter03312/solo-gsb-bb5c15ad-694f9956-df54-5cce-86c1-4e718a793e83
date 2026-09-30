@@ -316,13 +316,26 @@ class App:
             if item is None:
                 raise LookupError("物品不存在")
             claims = repository.list_claims_for_item(self.conn(), int(parts[0]))
-            return self.html(render.staff_item_detail(item, claims, self.csrf_token(req), flash))
+            corrections = repository.list_corrections_for_item(self.conn(), int(parts[0]))
+            return self.html(
+                render.staff_item_detail(item, claims, corrections, self.csrf_token(req), flash)
+            )
 
         if m == "POST" and (parts := _match("/staff/items/{id}/remove", p)):
             if not self.check_csrf(req):
                 return self.bad_csrf()
             iid = int(parts[0])
-            repository.remove_item(self.conn(), iid)
+            expect: int | None = None
+            ver_raw = req.form().get("version", "").strip()
+            if ver_raw:
+                try:
+                    expect = int(ver_raw)
+                except ValueError:
+                    raise ValueError("页面版本号无效，请刷新后重试。")
+            try:
+                repository.remove_item(self.conn(), iid, expect)
+            except ValueError as exc:  # 并发选定 / 改判后的版本冲突
+                return Response.redirect(f"/staff/items/{iid}", ("err", str(exc)))
             return Response.redirect(f"/staff/items/{iid}", ("ok", "物品已撤下，其待核对申请已标记为未获选。"))
 
         if m == "POST" and (parts := _match("/staff/items/{id}/restore", p)):
@@ -340,6 +353,9 @@ class App:
 
         if m == "POST" and (parts := _match("/staff/claims/{id}/resend", p)):
             return self.resend_code(req, int(parts[0]))
+
+        if m == "POST" and (parts := _match("/staff/claims/{id}/rejudge", p)):
+            return self.rejudge_claim(req, int(parts[0]))
 
         if p == "/staff/verify" and m == "GET":
             return self.html(render.staff_verify_form(self.csrf_token(req), flash))
@@ -397,9 +413,17 @@ class App:
         if claim is None:
             raise LookupError("申请不存在")
         active = repository.get_active_code_for_claim(self.conn(), claim_id)
+        claims = repository.list_claims_for_item(self.conn(), claim["item_id"])
+        corrections = repository.list_corrections_for_claim(self.conn(), claim_id)
         return self.html(
             render.staff_claim_detail(
-                claim, active, self.csrf_token(req), flash, plain_code=self._plain_code(active)
+                claim,
+                active,
+                claims,
+                corrections,
+                self.csrf_token(req),
+                flash,
+                plain_code=self._plain_code(active),
             )
         )
 
@@ -420,6 +444,40 @@ class App:
         except ValueError as exc:
             return Response.redirect(f"/staff/claims/{claim_id}", ("err", str(exc)))
         return Response.redirect(f"/staff/claims/{claim_id}", ("ok", "已重发新交还码，旧码立即失效。"))
+
+    def rejudge_claim(self, req: Request, from_claim_id: int) -> Response:
+        if not self.check_csrf(req):
+            return self.bad_csrf()
+        form = req.form()
+        reason = form.get("reason", "").strip()
+        if not reason:
+            raise ValueError("更正理由不能为空。")
+        if len(reason) > 2000:
+            raise ValueError("更正理由超出长度限制。")
+        try:
+            to_claim_id = int(form.get("to_claim_id", ""))
+        except (TypeError, ValueError):
+            raise ValueError("请选择作为改判目标的既有申请。")
+        expect_ver: int | None = None
+        ver_raw = form.get("version", "").strip()
+        if ver_raw:
+            try:
+                expect_ver = int(ver_raw)
+            except ValueError:
+                raise ValueError("页面版本号无效，请刷新后重试。")
+        try:
+            repository.rejudge_claim(
+                self.conn(), from_claim_id, to_claim_id, reason,
+                self.code_ttl, self.secret, expect_ver,
+            )
+        except (ValueError, LookupError) as exc:  # 条件不满足：拒绝且不改动任何状态
+            return Response.redirect(f"/staff/claims/{from_claim_id}", ("err", str(exc)))
+        item_id_raw = form.get("item_id", "").strip()
+        location = f"/staff/items/{item_id_raw}" if item_id_raw.isdigit() else "/staff"
+        return Response.redirect(
+            location,
+            ("ok", "改判完成：原申请已标记未获选，旧交还码立即失效，已为新获选人签发一次性交还码。"),
+        )
 
     def verify_code(self, req: Request) -> Response:
         if not self.check_csrf(req):

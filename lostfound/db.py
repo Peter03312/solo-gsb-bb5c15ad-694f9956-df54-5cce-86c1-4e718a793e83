@@ -48,5 +48,22 @@ def init_db(db_path: str | Path) -> None:
     conn = connect(path)
     try:
         conn.executescript(ddl)
+        _apply_migrations(conn)
     finally:
         conn.close()
+
+
+# 幂等列迁移：CREATE TABLE IF NOT EXISTS 不会给旧库补列。
+_COLUMN_MIGRATIONS = {
+    "items": {
+        "version": "ALTER TABLE items ADD COLUMN version INTEGER NOT NULL DEFAULT 0",
+    },
+}
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    for table, columns in _COLUMN_MIGRATIONS.items():
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in columns.items():
+            if name not in existing:
+                conn.execute(ddl)
