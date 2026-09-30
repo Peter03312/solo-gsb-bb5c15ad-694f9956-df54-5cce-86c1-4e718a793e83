@@ -316,7 +316,10 @@ class App:
             if item is None:
                 raise LookupError("物品不存在")
             claims = repository.list_claims_for_item(self.conn(), int(parts[0]))
-            return self.html(render.staff_item_detail(item, claims, self.csrf_token(req), flash))
+            corrections = repository.list_corrections_for_item(self.conn(), int(parts[0]))
+            return self.html(
+                render.staff_item_detail(item, claims, corrections, self.csrf_token(req), flash)
+            )
 
         if m == "POST" and (parts := _match("/staff/items/{id}/remove", p)):
             if not self.check_csrf(req):
@@ -337,6 +340,9 @@ class App:
 
         if m == "POST" and (parts := _match("/staff/claims/{id}/select", p)):
             return self.select_claim(req, int(parts[0]))
+
+        if m == "POST" and (parts := _match("/staff/claims/{id}/reselect", p)):
+            return self.reselect_claim(req, int(parts[0]))
 
         if m == "POST" and (parts := _match("/staff/claims/{id}/resend", p)):
             return self.resend_code(req, int(parts[0]))
@@ -397,9 +403,11 @@ class App:
         if claim is None:
             raise LookupError("申请不存在")
         active = repository.get_active_code_for_claim(self.conn(), claim_id)
+        siblings = repository.list_claims_for_item(self.conn(), claim["item_id"])
         return self.html(
             render.staff_claim_detail(
-                claim, active, self.csrf_token(req), flash, plain_code=self._plain_code(active)
+                claim, active, siblings, self.csrf_token(req), flash,
+                plain_code=self._plain_code(active),
             )
         )
 
@@ -420,6 +428,31 @@ class App:
         except ValueError as exc:
             return Response.redirect(f"/staff/claims/{claim_id}", ("err", str(exc)))
         return Response.redirect(f"/staff/claims/{claim_id}", ("ok", "已重发新交还码，旧码立即失效。"))
+
+    def reselect_claim(self, req: Request, from_claim_id: int) -> Response:
+        if not self.check_csrf(req):
+            return self.bad_csrf()
+        form = req.form()
+        raw_target = form.get("target_claim_id", "").strip()
+        if not raw_target.isdigit():
+            return Response.redirect(
+                f"/staff/claims/{from_claim_id}", ("err", "请选择同一物品的另一份既有申请作为目标。")
+            )
+        reason = form.get("reason", "").strip()
+        if not reason:
+            return Response.redirect(f"/staff/claims/{from_claim_id}", ("err", "更正理由不能为空。"))
+        try:
+            new_code = repository.reselect_claim(
+                self.conn(), from_claim_id, int(raw_target), reason, self.code_ttl, self.secret
+            )
+        except ValueError as exc:  # 物品已交还/撤下、非同物品、原申请已非获选等
+            return Response.redirect(f"/staff/claims/{from_claim_id}", ("err", str(exc)))
+        except LookupError as exc:
+            return Response.redirect(f"/staff/claims/{from_claim_id}", ("err", str(exc)))
+        return Response.redirect(
+            f"/staff/claims/{int(raw_target)}",
+            ("ok", f"已改判：新获选人一次性交还码 {new_code}，原申请交还码已全部失效。"),
+        )
 
     def verify_code(self, req: Request) -> Response:
         if not self.check_csrf(req):

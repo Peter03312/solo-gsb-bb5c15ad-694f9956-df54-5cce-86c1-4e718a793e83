@@ -67,7 +67,7 @@ h2{font-size:17px;margin:0 0 10px}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{border-bottom:1px solid var(--line);padding:9px 8px;text-align:left;vertical-align:top}
 th{color:var(--muted);font-weight:600;font-size:12px}
-input[type=text],input[type=password],input[type=email],textarea{
+input[type=text],input[type=password],input[type=email],select,textarea{
 width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:7px;
 font:inherit;font-size:14px;background:#fff}
 textarea{min-height:74px;resize:vertical}
@@ -318,7 +318,11 @@ def staff_dashboard(items: list[Any], csrf_token: str) -> str:
 
 
 def staff_item_detail(
-    item: Any, claims: list[Any], csrf_token: str, flash: tuple[str, str] | None = None
+    item: Any,
+    claims: list[Any],
+    corrections: list[Any],
+    csrf_token: str,
+    flash: tuple[str, str] | None = None,
 ) -> str:
     actions = ""
     if item["status"] == "kept":
@@ -344,6 +348,23 @@ def staff_item_detail(
             "</tr>"
         )
     rows = rows or '<tr><td colspan="5" class="muted">暂无认领申请。</td></tr>'
+    correction_rows = "".join(
+        "<tr>"
+        f'<td><a href="/staff/claims/{cc["from_claim_id"]}">#{cc["from_claim_id"]}</a></td>'
+        f'<td><a href="/staff/claims/{cc["to_claim_id"]}">#{cc["to_claim_id"]}</a></td>'
+        f"<td>{e(cc['reason'])}</td>"
+        f"<td>{fmt_time(cc['created_at'])}</td>"
+        "</tr>"
+        for cc in corrections
+    )
+    correction_card = ""
+    if correction_rows:
+        correction_card = f"""
+    <div class="card">
+      <h1>改判记录（工作人员追溯）</h1>
+      <table><thead><tr><th>原获选申请</th><th>新获选申请</th><th>更正理由</th><th>改判时间</th></tr></thead>
+      <tbody>{correction_rows}</tbody></table>
+    </div>"""
     body = f"""
     <div class="card">
       <h1>物品 #{item['id']} {item_badge(item['status'])}</h1>
@@ -358,13 +379,14 @@ def staff_item_detail(
       <h1>认领申请（含私密答案与联系方式，仅工作人员可见）</h1>
       <table><thead><tr><th>申请</th><th>状态</th><th>辨认答案</th><th>联系方式</th><th>提交时间</th></tr></thead>
       <tbody>{rows}</tbody></table>
-    </div>"""
+    </div>{correction_card}"""
     return page(f"物品 #{item['id']}", body, staff=True, flash=flash)
 
 
 def staff_claim_detail(
     claim: Any,
     active_code: Any,
+    siblings: list[Any],
     csrf_token: str,
     flash: tuple[str, str] | None = None,
     *,
@@ -380,6 +402,11 @@ def staff_claim_detail(
     code_panel = "<p class=\"muted\">尚未选定，暂无交还码。</p>"
     if claim["status"] == "selected":
         code_panel = _code_panel(claim, active_code, csrf_token, plain_code)
+    elif claim["status"] == "rejected":
+        code_panel = '<p class="muted">该申请未获选；若曾获选后被改判，其历史交还码均已失效。</p>'
+    reselect_card = ""
+    if claim["status"] == "selected" and claim["item_status"] == "kept":
+        reselect_card = _reselect_card(claim, siblings, csrf_token)
     body = f"""
     <div class="card">
       <h1>申请 #{claim['id']} {claim_badge(claim['status'])}</h1>
@@ -394,8 +421,36 @@ def staff_claim_detail(
       </dl>
       <div class="row">{select_btn}<a class="btn secondary" href="/staff/items/{claim['item_id']}">返回物品</a></div>
     </div>
-    <div class="card"><h1>一次性交还码</h1>{code_panel}</div>"""
+    <div class="card"><h1>一次性交还码</h1>{code_panel}</div>{reselect_card}"""
     return page(f"申请 #{claim['id']}", body, staff=True, flash=flash)
+
+
+def _reselect_card(claim: Any, siblings: list[Any], csrf_token: str) -> str:
+    """已获选申请的「误选改判」表单：目标只能是同一物品的未获选申请。"""
+    options = "".join(
+        f'<option value="{c["id"]}">#{c["id"]} 未获选 · '
+        f'{e(c["answer"])[:40]}（{e(c["contact"])}）</option>'
+        for c in siblings
+        if c["id"] != claim["id"] and c["status"] == "rejected"
+    )
+    if not options:
+        return ""
+    return f"""
+    <div class="card">
+      <h1>认领误选改判</h1>
+      <p class="muted">仅限物品仍保管且尚未交还时使用。改判后本申请变为未获选、其所有未核销交还码立即失效，
+      并为新获选人签发一枚一次性交还码；双方凭证此后只显示各自最新状态。</p>
+      <form method="post" action="/staff/claims/{claim['id']}/reselect"
+        onsubmit="return confirm('改判后本申请的交还码将立即失效，并为新获选人签发新码。确定改判？')">
+        {csrf_field(csrf_token)}
+        <label for="target_claim_id">同一物品的目标申请（须为未获选）</label>
+        <select id="target_claim_id" name="target_claim_id" required>{options}</select>
+        <label for="reason">更正理由（必填，随改判记录保存以供追溯）</label>
+        <textarea id="reason" name="reason" required maxlength="2000"
+          placeholder="例如：核对发现该申请人的辨认细节与私密特征不符，另一份申请的答案完全吻合"></textarea>
+        <div class="row"><button class="btn danger" type="submit">确认改判给所选申请</button></div>
+      </form>
+    </div>"""
 
 
 def _code_panel(claim: Any, active_code: Any, csrf_token: str, plain_code: str | None) -> str:

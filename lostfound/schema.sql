@@ -42,3 +42,15 @@ CREATE TABLE IF NOT EXISTS handover_codes (
 );
 CREATE INDEX IF NOT EXISTS idx_codes_claim ON handover_codes(claim_id);
 CREATE INDEX IF NOT EXISTS idx_codes_hash ON handover_codes(code_hash);
+
+-- 改判记录：工作人员发现认领误选时，把获选资格从一份申请改判给同一物品的
+-- 另一份未获选申请。仅保存申请双方、理由与时间，供工作人员追溯。
+CREATE TABLE IF NOT EXISTS claim_corrections (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id       INTEGER NOT NULL REFERENCES items(id),
+    from_claim_id INTEGER NOT NULL REFERENCES claims(id),  -- 原获选申请
+    to_claim_id   INTEGER NOT NULL REFERENCES claims(id),  -- 新获选申请
+    reason        TEXT    NOT NULL,                        -- 更正理由（不能为空）
+    created_at    TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_corrections_item ON claim_corrections(item_id);
